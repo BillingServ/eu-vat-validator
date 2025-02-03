@@ -12,7 +12,38 @@ namespace PH7\Eu\Vat\Provider;
 use PH7\Eu\Vat\Exception;
 use SoapClient;
 use SoapFault;
-use stdClass;
+
+class VatDetails
+{
+    public function __construct(
+        public readonly ?string $countryCode,
+        public readonly ?string $vatNumber,
+        public readonly ?string $requestDate,
+        public readonly bool $valid,
+        public readonly string $name,
+        public readonly string $address,
+        public readonly ?string $consultationNumber
+    ) {
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'countryCode' => $this->countryCode,
+            'vatNumber' => $this->vatNumber,
+            'requestDate' => $this->requestDate,
+            'valid' => $this->valid,
+            'name' => $this->name,
+            'address' => $this->address,
+            'consultationNumber' => $this->consultationNumber
+        ];
+    }
+}
+
+interface Providable
+{
+    public function getResource(string $vatNumber, string $countryCode): VatDetails;
+}
 
 class Europa implements Providable
 {
@@ -22,23 +53,20 @@ class Europa implements Providable
     private const IMPOSSIBLE_CONNECT_API_MESSAGE = 'Impossible to connect to the Europa SOAP: %s';
     private const IMPOSSIBLE_RETRIEVE_DATA_MESSAGE = 'Impossible to retrieve the VAT details: %s';
 
-    /** @var SoapClient */
-    private $oClient;
+    private SoapClient $client;
 
     /**
-     * Europa Provider constructor
-     *
      * @throws Exception
      */
     public function __construct()
     {
         try {
-            $this->oClient = new SoapClient($this->getApiUrl());
-        } catch (SoapFault $oExcept) {
+            $this->client = new SoapClient($this->getApiUrl());
+        } catch (SoapFault $except) {
             throw new Exception(
-                sprintf(self::IMPOSSIBLE_CONNECT_API_MESSAGE, $oExcept->faultstring),
+                sprintf(self::IMPOSSIBLE_CONNECT_API_MESSAGE, $except->faultstring),
                 0,
-                $oExcept
+                $except
             );
         }
     }
@@ -49,26 +77,55 @@ class Europa implements Providable
     }
 
     /**
-     * Send the VAT number and country code to europa.eu API and get the data.
-     *
-     * @param int|string $sVatNumber The VAT number
-     * @param string $sCountryCode The country code
-     *
-     * @return stdClass The VAT number's details.
-     *
      * @throws Exception
      */
-    public function getResource($sVatNumber, string $sCountryCode): stdClass
+    public function getResource(string $vatNumber, string $countryCode): VatDetails
     {
+        return $this->getResourceWithRequester($vatNumber, $countryCode);
+    }
+
+    /**
+     * @throws Exception
+     */
+    public function getResourceWithRequester(
+        string $vatNumber,
+        string $countryCode,
+        ?string $requesterVatNumber = null,
+        ?string $requesterCountryCode = null
+    ): VatDetails {
         try {
-            $aDetails = [
-                'countryCode' => strtoupper($sCountryCode),
-                'vatNumber' => $sVatNumber
+            $details = [
+                'countryCode' => strtoupper($countryCode),
+                'vatNumber' => $vatNumber,
             ];
-            return $this->oClient->checkVat($aDetails);
-        } catch (SoapFault $oExcept) {
+
+            if ($requesterVatNumber && $requesterCountryCode) {
+                $details['requesterCountryCode'] = strtoupper($requesterCountryCode);
+                $details['requesterVatNumber'] = $requesterVatNumber;
+            }
+
+            $businessResponse = $this->client->checkVat([
+                'countryCode' => $details['countryCode'],
+                'vatNumber' => $details['vatNumber'],
+            ]);
+
+            $consultationResponse = null;
+            if ($requesterVatNumber) {
+                $consultationResponse = $this->client->checkVatApprox($details);
+            }
+
+            return new VatDetails(
+                countryCode: $businessResponse->countryCode ?? null,
+                vatNumber: $businessResponse->vatNumber ?? null,
+                requestDate: $businessResponse->requestDate ?? null,
+                valid: $businessResponse->valid ?? false,
+                name: $businessResponse->name ?? 'N/A',
+                address: $businessResponse->address ?? 'N/A',
+                consultationNumber: $consultationResponse->requestIdentifier ?? 'Not provided'
+            );
+        } catch (SoapFault $except) {
             throw new Exception(
-                sprintf(self::IMPOSSIBLE_RETRIEVE_DATA_MESSAGE, $oExcept->faultstring)
+                sprintf(self::IMPOSSIBLE_RETRIEVE_DATA_MESSAGE, $except->faultstring)
             );
         }
     }
